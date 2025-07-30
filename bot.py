@@ -1,91 +1,63 @@
 import os
+import json
 import datetime
 import logging
-import asyncio
-import nest_asyncio
+import gspread
+from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
-
-# Загрузка переменных из .env
+# Загрузка переменных окружения из .env (локально)
 load_dotenv()
+
+# Получаем токен из переменной среды
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GOOGLE_CREDS_FILE = "telegramfuelbot-7da908eba21b.json"
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+print(f"Загруженный TELEGRAM_TOKEN: {TELEGRAM_TOKEN}")
 
-print("Загруженный TELEGRAM_TOKEN:", TELEGRAM_TOKEN)
-print("Бот запущен...")
+# Авторизация Google Sheets через переменную среды с JSON-ключом
+scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+creds_json = os.getenv("GOOGLE_CREDS_JSON")
+creds_dict = json.loads(creds_json)
+credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
 
-# Авторизация Google Sheets
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-credentials = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS_FILE, scope)
 client = gspread.authorize(credentials)
 
-# Словарь русских месяцев
-russian_months = {
-    "01": "Январь", "02": "Февраль", "03": "Март", "04": "Апрель",
-    "05": "Май", "06": "Июнь", "07": "Июль", "08": "Август",
-    "09": "Сентябрь", "10": "Октябрь", "11": "Ноябрь", "12": "Декабрь"
-}
-
-# Обработчик сообщений
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    parts = text.split()
-
-    if len(parts) < 3:
-        await update.message.reply_text("❗ Пожалуйста, введите хотя бы Кому, Вид и Кол-во.")
-        return
-
-    кому = parts[0]
-    вид = parts[1]
-    количество = parts[2]
-
-    # Определяем дату
-    if len(parts) >= 4 and "." in parts[3]:
-        дата = parts[3]
-        примечание = " ".join(parts[4:]) if len(parts) > 4 else ""
-    else:
-        дата = datetime.datetime.now().strftime('%d.%m.%Y')
-        примечание = " ".join(parts[3:]) if len(parts) > 3 else ""
-
-    # Получаем название месяца на русском
+# Определение названия таблицы по текущему месяцу
+def get_sheet():
+    month_name = datetime.datetime.now().strftime("%B")  # Например: 'July'
     try:
-        day, month, year = дата.split(".")
-    except ValueError:
-        await update.message.reply_text("⚠️ Неверный формат даты. Используйте ДД.ММ.ГГГГ.")
-        return
-
-    month_name_ru = russian_months.get(month)
-    if not month_name_ru:
-        await update.message.reply_text("⚠️ Не удалось определить месяц из даты.")
-        return
-
-    # Открытие или создание листа
-    spreadsheet = client.open_by_key(SPREADSHEET_ID)
-    try:
-        worksheet = spreadsheet.worksheet(month_name_ru)
+        sheet = client.open("telegram-bot-data").worksheet(month_name)
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=month_name_ru, rows="1000", cols="10")
-        worksheet.append_row(["Кому", "Вид", "Кол-во", "Дата", "Примечание"])
+        sheet = client.open("telegram-bot-data").add_worksheet(title=month_name, rows="1000", cols="5")
+        sheet.append_row(["Кому", "Вид", "Кол-во", "Дата", "Примечания"])
+    return sheet
 
-    # Добавление строки
-    row = [кому, вид, количество, дата, примечание]
-    worksheet.append_row(row)
+# Обработка входящего сообщения
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text
+    parts = text.split()
+    
+    кому = parts[0] if len(parts) > 0 else ""
+    вид = parts[1] if len(parts) > 1 else ""
+    количество = parts[2] if len(parts) > 2 else ""
+    дата = parts[3] if len(parts) > 3 and "." in parts[3] else datetime.datetime.now().strftime("%d.%m.%Y")
+    примечание = " ".join(parts[4:]) if len(parts) > 4 else ""
+    
+    if "." not in дата:
+        примечание = " ".join(parts[3:])
+        дата = datetime.datetime.now().strftime("%d.%m.%Y")
 
-    await update.message.reply_text(f"✅ Данные добавлены на вкладку «{month_name_ru}».")
+    sheet = get_sheet()
+    sheet.append_row([кому, вид, количество, дата, примечание])
+    
+    await update.message.reply_text("✅ Данные успешно записаны!")
 
-# Запуск бота
-async def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    await app.run_polling()
-
+# Запуск Telegram-бота
 if __name__ == "__main__":
-    nest_asyncio.apply()
-    asyncio.run(main())
+    logging.basicConfig(level=logging.INFO)
+    print("Бот запущен...")
+
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.run_polling()
