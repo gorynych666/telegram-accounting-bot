@@ -1,63 +1,52 @@
 import os
 import json
-import datetime
-import logging
-import gspread
-from google.oauth2.service_account import Credentials
+from datetime import datetime
 from dotenv import load_dotenv
+from google.oauth2.service_account import Credentials
+import gspread
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
-# Загрузка переменных окружения из .env (локально)
+# Загружаем переменные окружения
 load_dotenv()
 
-# Получаем токен из переменной среды
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-print(f"Загруженный TELEGRAM_TOKEN: {TELEGRAM_TOKEN}")
+GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
-# Авторизация Google Sheets через переменную среды с JSON-ключом
-scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-creds_json = os.getenv("GOOGLE_CREDS_JSON")
-creds_dict = json.loads(creds_json)
+# Авторизация в Google Sheets
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds_dict = json.loads(GOOGLE_CREDS_JSON)
 credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
-
 client = gspread.authorize(credentials)
+sheet = client.open_by_key(SPREADSHEET_ID)
 
-# Определение названия таблицы по текущему месяцу
-def get_sheet():
-    month_name = datetime.datetime.now().strftime("%B")  # Например: 'July'
-    try:
-        sheet = client.open("telegram-bot-data").worksheet(month_name)
-    except gspread.exceptions.WorksheetNotFound:
-        sheet = client.open("telegram-bot-data").add_worksheet(title=month_name, rows="1000", cols="5")
-        sheet.append_row(["Кому", "Вид", "Кол-во", "Дата", "Примечания"])
-    return sheet
+# Получаем название текущего месяца
+month_title = datetime.now().strftime('%B').capitalize()
+worksheet = sheet.worksheet(month_title)
 
-# Обработка входящего сообщения
+# Асинхронная обработка сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text
+    text = update.message.text.strip()
     parts = text.split()
-    
-    кому = parts[0] if len(parts) > 0 else ""
-    вид = parts[1] if len(parts) > 1 else ""
-    количество = parts[2] if len(parts) > 2 else ""
-    дата = parts[3] if len(parts) > 3 and "." in parts[3] else datetime.datetime.now().strftime("%d.%m.%Y")
-    примечание = " ".join(parts[4:]) if len(parts) > 4 else ""
-    
-    if "." not in дата:
-        примечание = " ".join(parts[3:])
-        дата = datetime.datetime.now().strftime("%d.%m.%Y")
 
-    sheet = get_sheet()
-    sheet.append_row([кому, вид, количество, дата, примечание])
-    
-    await update.message.reply_text("✅ Данные успешно записаны!")
+    # Добавляем дату (если она не указана вручную)
+    try:
+        datetime.strptime(parts[3], "%d.%m.%Y")
+        data = parts
+    except (IndexError, ValueError):
+        today = datetime.now().strftime("%d.%m.%Y")
+        data = parts[:3] + [today] + parts[3:]
 
-# Запуск Telegram-бота
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    print("Бот запущен...")
+    # Делаем длину списка = 5, дополняем пустыми значениями
+    while len(data) < 5:
+        data.append("")
 
+    worksheet.append_row(data)
+    await update.message.reply_text("✅ Данные успешно добавлены!")
+
+# Запуск бота
+if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
