@@ -1,58 +1,73 @@
 import os
 import json
-from datetime import datetime
-from dotenv import load_dotenv
-from google.oauth2.service_account import Credentials
+import datetime
+import logging
+
 import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
-# Загружаем переменные окружения
-load_dotenv()
+# Настройка логов
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+# Получаем переменные окружения
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
+raw_credentials = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+
+if not TELEGRAM_TOKEN or not SPREADSHEET_ID or not raw_credentials:
+    raise ValueError("Одна или несколько переменных окружения не заданы")
+
+# Преобразуем JSON-строку в словарь
+creds_dict = json.loads(raw_credentials)
 
 # Авторизация в Google Sheets
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-raw_credentials = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
-creds_dict = json.loads(raw_credentials)
-
-# Исправляем переносы в ключе
-if "private_key" in creds_dict:
-    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-
-credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
+credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(credentials)
-sheet = client.open_by_key(SPREADSHEET_ID)
 
-# Получаем название текущего месяца
-month_title = datetime.now().strftime('%B').capitalize()
-worksheet = sheet.worksheet(month_title)
-
-# Асинхронная обработка сообщений
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text.strip()
-    parts = text.split()
-
-    # Добавляем дату (если она не указана вручную)
+# Получаем название листа по текущему месяцу
+def get_current_month_sheet():
+    month_name = datetime.datetime.now().strftime("%B")
     try:
-        datetime.strptime(parts[3], "%d.%m.%Y")
-        data = parts
-    except (IndexError, ValueError):
-        today = datetime.now().strftime("%d.%m.%Y")
-        data = parts[:3] + [today] + parts[3:]
+        return client.open_by_key(SPREADSHEET_ID).worksheet(month_name)
+    except gspread.WorksheetNotFound:
+        raise ValueError(f"Лист с названием '{month_name}' не найден в таблице.")
 
-    # Делаем длину списка = 5, дополняем пустыми значениями
-    while len(data) < 5:
-        data.append("")
+# Обработка входящих сообщений
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        message_text = update.message.text.strip()
+        parts = message_text.split(" ")
 
-    worksheet.append_row(data)
-    await update.message.reply_text("✅ Данные успешно добавлены!")
+        # Определяем значения
+        komu = parts[0] if len(parts) > 0 else ""
+        vid = parts[1] if len(parts) > 1 else ""
+        kolvo = parts[2] if len(parts) > 2 else ""
+        date = parts[3] if len(parts) > 3 and "." in parts[3] else datetime.datetime.now().strftime("%d.%m.%Y")
+        primechanie = " ".join(parts[4:]) if len(parts) > 4 else ""
+
+        # Если дата указана в виде 4-го элемента, учитываем это
+        if len(parts) > 3 and "." in parts[3]:
+            primechanie = " ".join(parts[4:])
+        elif len(parts) > 3:
+            primechanie = " ".join(parts[3:])
+
+        # Открываем таблицу
+        sheet = get_current_month_sheet()
+
+        # Добавляем строку
+        sheet.append_row([komu, vid, kolvo, date, primechanie])
+
+        await update.message.reply_text("✅ Данные успешно добавлены.")
+    except Exception as e:
+        logger.error(f"Ошибка при обработке сообщения: {e}")
+        await update.message.reply_text(f"⚠️ Произошла ошибка: {e}")
 
 # Запуск бота
-if __name__ == '__main__':
+if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
