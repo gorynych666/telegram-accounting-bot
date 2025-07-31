@@ -16,7 +16,13 @@ SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
 # Авторизация в Google Sheets
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds_dict = json.loads(GOOGLE_CREDS_JSON)
+raw_credentials = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+creds_dict = json.loads(raw_credentials)
+
+# Исправляем переносы в ключе
+if "private_key" in creds_dict:
+    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+
 credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
 client = gspread.authorize(credentials)
 sheet = client.open_by_key(SPREADSHEET_ID)
