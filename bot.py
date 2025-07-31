@@ -21,7 +21,7 @@ if not TELEGRAM_TOKEN or not SPREADSHEET_ID or not raw_credentials:
     raise ValueError("Одна или несколько переменных окружения не заданы")
 
 # Преобразуем JSON-строку в словарь
-creds_dict = json.loads(raw_credentials)
+creds_dict = json.loads(json.loads(raw_credentials))
 
 # Авторизация в Google Sheets
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
