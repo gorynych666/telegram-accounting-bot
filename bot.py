@@ -1,73 +1,81 @@
 import os
 import json
-import datetime
-import logging
-
+from datetime import datetime
+from dotenv import load_dotenv
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Настройка логов
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Загрузка переменных из .env
+load_dotenv()
 
-# Получаем переменные окружения
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
-raw_credentials = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-if not TELEGRAM_TOKEN or not SPREADSHEET_ID or not raw_credentials:
-    raise ValueError("Одна или несколько переменных окружения не заданы")
-
-# Преобразуем JSON-строку в словарь
-creds_dict = json.loads(json.loads(raw_credentials))
-
-# Авторизация в Google Sheets
+# Подключение к Google Sheets
+creds_dict = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-client = gspread.authorize(credentials)
+gc = gspread.authorize(credentials)
+spreadsheet = gc.open_by_key(SPREADSHEET_ID)
 
-# Получаем название листа по текущему месяцу
+# Получение названия листа по текущему месяцу
 def get_current_month_sheet():
-    month_name = datetime.datetime.now().strftime("%B")
+    month_name = datetime.now().strftime('%B')
     try:
-        return client.open_by_key(SPREADSHEET_ID).worksheet(month_name)
+        return spreadsheet.worksheet(month_name)
     except gspread.WorksheetNotFound:
-        raise ValueError(f"Лист с названием '{month_name}' не найден в таблице.")
+        return spreadsheet.add_worksheet(title=month_name, rows="100", cols="10")
 
-# Обработка входящих сообщений
+# Разбор сообщения и запись в таблицу
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        message_text = update.message.text.strip()
-        parts = message_text.split(" ")
+    text = update.message.text.strip()
+    parts = text.split()
 
-        # Определяем значения
-        komu = parts[0] if len(parts) > 0 else ""
-        vid = parts[1] if len(parts) > 1 else ""
-        kolvo = parts[2] if len(parts) > 2 else ""
-        date = parts[3] if len(parts) > 3 and "." in parts[3] else datetime.datetime.now().strftime("%d.%m.%Y")
-        primechanie = " ".join(parts[4:]) if len(parts) > 4 else ""
+    if not parts or len(parts) < 3:
+        await update.message.reply_text("❌ Формат: Кому Вид Кол-во [Дата] [Примечание]")
+        return
 
-        # Если дата указана в виде 4-го элемента, учитываем это
-        if len(parts) > 3 and "." in parts[3]:
-            primechanie = " ".join(parts[4:])
-        elif len(parts) > 3:
-            primechanie = " ".join(parts[3:])
+    кому = parts[0]
+    вид = parts[1]
+    кол_во = parts[2]
 
-        # Открываем таблицу
-        sheet = get_current_month_sheet()
+    дата = datetime.now().strftime("%d.%m.%Y")
+    примечание = ""
 
-        # Добавляем строку
-        sheet.append_row([komu, vid, kolvo, date, primechanie])
+    if len(parts) >= 4:
+        if "." in parts[3]:
+            дата = parts[3]
+            if len(parts) > 4:
+                примечание = " ".join(parts[4:])
+        else:
+            примечание = " ".join(parts[3:])
 
-        await update.message.reply_text("✅ Данные успешно добавлены.")
-    except Exception as e:
-        logger.error(f"Ошибка при обработке сообщения: {e}")
-        await update.message.reply_text(f"⚠️ Произошла ошибка: {e}")
+    sheet = get_current_month_sheet()
+    row = [кому, вид, кол_во, дата, примечание]
+    sheet.append_row(row)
 
-# Запуск бота
+    await update.message.reply_text("✅ Данные записаны!")
+
+# Команда старта
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Введи данные в формате:\nКому Вид Кол-во [Дата] [Примечание]")
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.run_polling()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+
+    # Автонастройка Webhook
+    PORT = int(os.environ.get("PORT", 8443))
+    URL = f"{RENDER_EXTERNAL_URL}/webhook"
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=URL
+    )
