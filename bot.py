@@ -74,7 +74,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Настройка webhook
-    webhook_url = f"{RENDER_EXTERNAL_URL}/webhook/{TELEGRAM_TOKEN}"
+    webhook_url = f"{RENDER_EXTERNAL_URL}"
     app.run_webhook(
         listen="0.0.0.0",
         port=10000,
