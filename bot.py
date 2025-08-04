@@ -34,14 +34,35 @@ scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/au
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(credentials)
 
-# Получить лист текущего месяца
+# Получить или создать лист текущего месяца на русском
 def get_current_month_sheet():
-    month_name = datetime.datetime.now().strftime("%B")
-    try:
-        return client.open_by_key(SPREADSHEET_ID).worksheet(month_name)
-    except gspread.WorksheetNotFound:
-        raise ValueError(f"Лист с названием '{month_name}' не найден в таблице.")
+    # Названия месяцев на русском
+    month_name_eng = datetime.datetime.now().strftime("%B")
+    month_name_mapping = {
+        "January": "Январь",
+        "February": "Февраль",
+        "March": "Март",
+        "April": "Апрель",
+        "May": "Май",
+        "June": "Июнь",
+        "July": "Июль",
+        "August": "Август",
+        "September": "Сентябрь",
+        "October": "Октябрь",
+        "November": "Ноябрь",
+        "December": "Декабрь",
+    }
+    month_rus = month_name_mapping.get(month_name_eng)
 
+    spreadsheet = client.open_by_key(SPREADSHEET_ID)
+
+    try:
+        return spreadsheet.worksheet(month_rus)
+    except gspread.WorksheetNotFound:
+        # Если лист не найден — создать его
+        new_sheet = spreadsheet.add_worksheet(title=month_rus, rows="100", cols="5")
+        new_sheet.append_row(["Кому", "Вид", "Кол-во", "Дата", "Примечание"])
+        return new_sheet
 # Обработка сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
