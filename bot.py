@@ -1,108 +1,103 @@
-import logging
 import os
-import re
-from datetime import datetime
-
-from dotenv import load_dotenv
-from gspread_formatting import CellFormat, set_cell_format, Border
+import datetime
 import gspread
-from google.oauth2.service_account import Credentials
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
-import calendar
+import logging
+from dotenv import load_dotenv
+from gspread_formatting import CellFormat, Color, format_cell_range, Border, borders
 
-load_dotenv()
+from oauth2client.service_account import ServiceAccountCredentials
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Данные из .env
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Загрузка переменных окружения
+load_dotenv()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE")
 
-# Авторизация Google
-credentials = Credentials.from_service_account_file(
-    SERVICE_ACCOUNT_FILE,
-    scopes=["https://www.googleapis.com/auth/spreadsheets"]
-)
-client = gspread.authorize(credentials)
+# Авторизация в Google Sheets
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/spreadsheets",
+         "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
 
-# Названия столбцов (на русском)
-HEADERS = [
+creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
+client = gspread.authorize(creds)
+
+# Названия столбцов
+COLUMNS = [
     "Дата", "Водитель (ФИО)", "Транспорт", "Номер транспорта",
     "Наименование груза", "Количество топлива", "Вид топлива",
     "Маршрут", "Расстояние (км)", "Машина (час)", "Остаток топлива", "Примечание"
 ]
 
-# Функция: автоформат
-def apply_borders(ws, row_index: int):
-    cell_range = f"A{row_index}:L{row_index}"
-    border_format = CellFormat(
-        borders={
-            "top": Border("SOLID"),
-            "bottom": Border("SOLID"),
-            "left": Border("SOLID"),
-            "right": Border("SOLID")
-        }
-    )
-    set_cell_format(ws, cell_range, border_format)
-
-# Функция: получение/создание листа по текущему месяцу
+# Функция создания новой вкладки по месяцу
 def get_or_create_month_worksheet():
-    now = datetime.now()
-    sheet_name = now.strftime("%B")
-    sheet_name_ru = {
-        'January': 'Январь', 'February': 'Февраль', 'March': 'Март',
-        'April': 'Апрель', 'May': 'Май', 'June': 'Июнь',
-        'July': 'Июль', 'August': 'Август', 'September': 'Сентябрь',
-        'October': 'Октябрь', 'November': 'Ноябрь', 'December': 'Декабрь'
-    }.get(sheet_name, sheet_name)
-
+    sheet = client.open_by_key(SPREADSHEET_ID)
+    month_name = datetime.datetime.now().strftime('%B')
     try:
-        worksheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name_ru)
+        worksheet = sheet.worksheet(month_name)
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = client.open_by_key(SPREADSHEET_ID).add_worksheet(title=sheet_name_ru, rows="1000", cols="12")
-        worksheet.append_row(HEADERS)
-
+        worksheet = sheet.add_worksheet(title=month_name, rows="100", cols="20")
+        worksheet.append_row(COLUMNS)
     return worksheet
 
-# Парсинг сообщения
-def parse_message(message: str):
-    parts = message.strip().split()
+# Форматирование рамок
+def apply_borders(worksheet, cell_range):
+    border_format = CellFormat(borders=borders(
+        top=Border("SOLID"), bottom=Border("SOLID"),
+        left=Border("SOLID"), right=Border("SOLID")
+    ))
+    format_cell_range(worksheet, cell_range, border_format)
 
-    if len(parts) < 11:
-        raise ValueError("Недостаточно данных. Минимум 11 элементов.")
+# Команда /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Отправь данные в формате:\n"
+                                    "ФИО Транспорт Номер Груз Кол-во ВидТоплива Маршрут КМ МашЧас Остаток Примечание")
 
-    main_data = parts[:11]
-    notes = " ".join(parts[11:]) if len(parts) > 11 else ""
-    today = datetime.today().strftime("%d.%m.%Y")
-    return [today] + main_data + [notes]
-
-# Обработчик сообщений
+# Обработка сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        message = update.message.text
-        data = parse_message(message)
-        worksheet = get_or_create_month_worksheet()
-        worksheet.append_row(data)
-        apply_borders(worksheet, len(worksheet.get_all_values()))
-        await update.message.reply_text("✅ Данные успешно добавлены.")
-    except Exception as e:
-        logger.error(f"Ошибка при обработке сообщения: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+    msg = update.message.text.strip()
+    parts = msg.split()
+    
+    if len(parts) < 11:
+        await update.message.reply_text("Недостаточно данных. Убедитесь, что вы указали все поля.")
+        return
+
+    now = datetime.datetime.now()
+    today = now.strftime("%d.%m.%Y")
+    worksheet = get_or_create_month_worksheet()
+
+    # Парсинг
+    komu = parts[0]
+    vid = parts[1]
+    nomer = parts[2]
+    naimenovanie = parts[3]
+    kolvo = parts[4]
+    vid_topliva = parts[5]
+    marshrut = parts[6]
+    km = parts[7]
+    mash_chas = parts[8]
+    ostatok = parts[9]
+    primechanie = " ".join(parts[10:])
+
+    # Добавление строки
+    row = [today, komu, vid, nomer, naimenovanie, kolvo, vid_topliva, marshrut, km, mash_chas, ostatok, primechanie]
+    worksheet.append_row(row)
+
+    # Форматирование границ
+    last_row = len(worksheet.get_all_values())
+    cell_range = f"A{last_row}:L{last_row}"
+    apply_borders(worksheet, cell_range)
+
+    await update.message.reply_text("✅ Данные успешно добавлены!")
 
 # Запуск бота
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    app.run_polling()
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
