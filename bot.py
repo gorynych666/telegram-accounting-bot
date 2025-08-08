@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from gspread_formatting import CellFormat, Border, set_frozen
 from gspread_formatting import set_format
 from gspread_formatting import Color
-from gspread_formatting import set_cell_format
+from gspread_formatting import CellFormat, format_cell_range, Border, Color
 from gspread_formatting import Border
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
