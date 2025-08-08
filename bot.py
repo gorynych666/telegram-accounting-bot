@@ -1,98 +1,108 @@
 import logging
 import os
+import re
 from datetime import datetime
 
-import gspread
 from dotenv import load_dotenv
-from gspread_formatting import CellFormat, Border, set_frozen
-from gspread_formatting import set_format
-from gspread_formatting import Color
-from gspread_formatting import CellFormat, format_cell_range, Border, Color
-from gspread_formatting import Border
+from gspread_formatting import CellFormat, set_cell_format, Border
+import gspread
+from google.oauth2.service_account import Credentials
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+import calendar
 
-# Load environment variables
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Данные из .env
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE")
 
-# Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+# Авторизация Google
+credentials = Credentials.from_service_account_file(
+    SERVICE_ACCOUNT_FILE,
+    scopes=["https://www.googleapis.com/auth/spreadsheets"]
 )
+client = gspread.authorize(credentials)
 
-# Connect to Google Sheets
-gc = gspread.service_account(filename=SERVICE_ACCOUNT_FILE)
-sheet = gc.open_by_key(SPREADSHEET_ID)
+# Названия столбцов (на русском)
+HEADERS = [
+    "Дата", "Водитель (ФИО)", "Транспорт", "Номер транспорта",
+    "Наименование груза", "Количество топлива", "Вид топлива",
+    "Маршрут", "Расстояние (км)", "Машина (час)", "Остаток топлива", "Примечание"
+]
 
-# Define month mapping
-MONTHS = {
-    "01": "Январь", "02": "Февраль", "03": "Март", "04": "Апрель",
-    "05": "Май", "06": "Июнь", "07": "Июль", "08": "Август",
-    "09": "Сентябрь", "10": "Октябрь", "11": "Ноябрь", "12": "Декабрь"
-}
+# Функция: автоформат
+def apply_borders(ws, row_index: int):
+    cell_range = f"A{row_index}:L{row_index}"
+    border_format = CellFormat(
+        borders={
+            "top": Border("SOLID"),
+            "bottom": Border("SOLID"),
+            "left": Border("SOLID"),
+            "right": Border("SOLID")
+        }
+    )
+    set_cell_format(ws, cell_range, border_format)
 
-# Border formatting
-border = Border("SOLID", Color(0, 0, 0, 1))
-cell_format = CellFormat(
-    borders={'top': border, 'bottom': border, 'left': border, 'right': border}
-)
+# Функция: получение/создание листа по текущему месяцу
+def get_or_create_month_worksheet():
+    now = datetime.now()
+    sheet_name = now.strftime("%B")
+    sheet_name_ru = {
+        'January': 'Январь', 'February': 'Февраль', 'March': 'Март',
+        'April': 'Апрель', 'May': 'Май', 'June': 'Июнь',
+        'July': 'Июль', 'August': 'Август', 'September': 'Сентябрь',
+        'October': 'Октябрь', 'November': 'Ноябрь', 'December': 'Декабрь'
+    }.get(sheet_name, sheet_name)
 
+    try:
+        worksheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name_ru)
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = client.open_by_key(SPREADSHEET_ID).add_worksheet(title=sheet_name_ru, rows="1000", cols="12")
+        worksheet.append_row(HEADERS)
 
-def add_borders(worksheet, row_number):
-    cell_range = f"A{row_number}:L{row_number}"
-    set_cell_format(worksheet, cell_range, cell_format)
+    return worksheet
 
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    parts = text.split()
+# Парсинг сообщения
+def parse_message(message: str):
+    parts = message.strip().split()
 
     if len(parts) < 11:
-        await update.message.reply_text("Ошибка: слишком мало данных. Нужно минимум 11 полей.")
-        return
+        raise ValueError("Недостаточно данных. Минимум 11 элементов.")
 
-    driver = parts[0]
-    vehicle = parts[1]
-    model = parts[2]
-    plate = parts[3]
-    cargo = parts[4]
-    fuel_qty = parts[5]
-    fuel_type = parts[6]
-    route = parts[7]
-    distance = parts[8]
-    machine_hours = parts[9]
-    fuel_left = parts[10]
-    note = " ".join(parts[11:]) if len(parts) > 11 else ""
+    main_data = parts[:11]
+    notes = " ".join(parts[11:]) if len(parts) > 11 else ""
+    today = datetime.today().strftime("%d.%m.%Y")
+    return [today] + main_data + [notes]
 
-    # Current date
-    today = datetime.now()
-    date_str = today.strftime("%d.%m.%Y")
-    month_tab = MONTHS[today.strftime("%m")]
-
+# Обработчик сообщений
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        worksheet = sheet.worksheet(month_tab)
-    except gspread.exceptions.WorksheetNotFound:
-        worksheet = sheet.add_worksheet(title=month_tab, rows="100", cols="12")
-
-    row = [date_str, driver, vehicle, model, plate, cargo, fuel_qty,
-           fuel_type, route, distance, machine_hours, fuel_left, note]
-
-    try:
-        worksheet.append_row(row, value_input_option="USER_ENTERED")
-        row_num = len(worksheet.get_all_values())
-        add_borders(worksheet, row_num)
+        message = update.message.text
+        data = parse_message(message)
+        worksheet = get_or_create_month_worksheet()
+        worksheet.append_row(data)
+        apply_borders(worksheet, len(worksheet.get_all_values()))
         await update.message.reply_text("✅ Данные успешно добавлены.")
     except Exception as e:
-        logging.error(f"Ошибка при добавлении строки: {e}")
-        await update.message.reply_text("❌ Ошибка при добавлении данных в таблицу.")
+        logger.error(f"Ошибка при обработке сообщения: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
-
-if __name__ == '__main__':
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
-    app.add_handler(handler)
+# Запуск бота
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.run_polling()
+
+if __name__ == "__main__":
+    main()
