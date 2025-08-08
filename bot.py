@@ -1,10 +1,8 @@
 import os
-import re
 import datetime
-import logging
-import calendar
-import gspread
 from dotenv import load_dotenv
+import gspread
+from gspread_formatting import format_cell_range, CellFormat, Border, Color, borders
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update
 from telegram.ext import (
@@ -13,90 +11,91 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from gspread_formatting import set_cell_format, CellFormat, Border, Color
+import nest_asyncio
 
+# Загрузка переменных окружения
 load_dotenv()
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+SERVICE_ACCOUNT_FILE = "service_account.json"
 
-logging.basicConfig(level=logging.INFO)
-
-# Настройка Google Sheets
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-client = gspread.authorize(creds)
-
-# 12 столбцов таблицы
-HEADERS = [
-    "Дата", "Водитель (ФИО)", "Транспорт", "Номер транспорта", "Наименование груза",
-    "Количество топлива", "Вид топлива", "Маршрут", "Расстояние (км)",
-    "Машина (час)", "Остаток топлива", "Примечание"
+# Подключение к Google Sheets
+scope = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive",
 ]
+credentials = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
+gc = gspread.authorize(credentials)
+spreadsheet = gc.open_by_key(SPREADSHEET_ID)
 
-# Формат границ для строки
-border_format = CellFormat(
-    borders={
-        "top": Border("SOLID", Color(0, 0, 0)),
-        "bottom": Border("SOLID", Color(0, 0, 0)),
-        "left": Border("SOLID", Color(0, 0, 0)),
-        "right": Border("SOLID", Color(0, 0, 0)),
-    }
+# Формат для границ ячеек
+cell_border_format = CellFormat(
+    borders=borders(
+        top=Border("SOLID", Color(0, 0, 0)),
+        bottom=Border("SOLID", Color(0, 0, 0)),
+        left=Border("SOLID", Color(0, 0, 0)),
+        right=Border("SOLID", Color(0, 0, 0)),
+    )
 )
 
-def get_month_sheet():
-    now = datetime.datetime.now()
-    month_title = now.strftime("%B").capitalize()  # Пример: "August"
+# Создание листа, если не существует
+def get_or_create_sheet(title):
     try:
-        return client.open_by_key(GOOGLE_SHEET_ID).worksheet(month_title)
+        return spreadsheet.worksheet(title)
     except gspread.exceptions.WorksheetNotFound:
-        sheet = client.open_by_key(GOOGLE_SHEET_ID).add_worksheet(title=month_title, rows="1000", cols="20")
-        sheet.append_row(HEADERS)
-        return sheet
+        return spreadsheet.add_worksheet(title=title, rows="1000", cols="20")
 
-def format_date(raw_date):
-    try:
-        return datetime.datetime.strptime(raw_date, "%d.%m.%Y").strftime("%d.%m.%Y")
-    except ValueError:
-        return datetime.datetime.now().strftime("%d.%m.%Y")
-
+# Парсинг и обработка сообщения
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    values = text.split()
+    message_text = update.message.text.strip()
+    values = message_text.split()
 
-    # Автозаполнение текущей даты, если она не указана
-    date_regex = r"^\d{2}\.\d{2}\.\d{4}$"
-    if values and re.match(date_regex, values[0]):
-        date = format_date(values.pop(0))
-    else:
-        date = format_date("")
+    if not values:
+        await update.message.reply_text("Ошибка: пустое сообщение.")
+        return
 
-    # Дополнить недостающие элементы пустыми значениями
-    while len(values) < 11:
-        values.append("")
+    # Названия столбцов
+    headers = [
+        "Дата", "Водитель (ФИО)", "Транспорт", "Номер транспорта", "Наименование груза",
+        "Количество топлива", "Вид топлива", "Маршрут", "Расстояние (км)",
+        "Машина (час)", "Остаток топлива", "Примечание"
+    ]
 
-    row = [date] + values[:11]  # Итого 12 значений
+    # Лист по текущему месяцу
+    now = datetime.datetime.now()
+    sheet_title = now.strftime("%B").capitalize()
+    worksheet = get_or_create_sheet(sheet_title)
 
-    sheet = get_month_sheet()
-    sheet.append_row(row)
+    # Проверка и установка заголовков
+    if not worksheet.row_values(1):
+        worksheet.insert_row(headers, index=1)
 
-    # Применить границы к последней строке
-    last_row_index = len(sheet.get_all_values())
-    for col in range(1, 13):  # Столбцы A–L (1–12)
-        set_cell_format(sheet, f"{chr(64 + col)}{last_row_index}", border_format)
+    # Автоматическое добавление даты, если не указано явно
+    today = now.strftime("%d.%m.%Y")
+    if len(values) == 11:
+        values.insert(0, today)
+    elif len(values) < 12:
+        await update.message.reply_text("Ошибка: недостаточно данных.")
+        return
+    elif len(values) > 12:
+        await update.message.reply_text("Ошибка: слишком много данных.")
+        return
 
-    await update.message.reply_text("✅ Данные успешно добавлены в таблицу!")
+    worksheet.append_row(values)
+    row_number = len(worksheet.get_all_values())
+    cell_range = f"A{row_number}:L{row_number}"
+    format_cell_range(worksheet, cell_range, cell_border_format)
 
+    await update.message.reply_text("Данные успешно добавлены.")
+
+# Запуск бота
 if __name__ == "__main__":
-    from telegram.ext import Application
-
+    nest_asyncio.apply()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    webhook_url = f"{RENDER_EXTERNAL_URL}"
     app.run_webhook(
         listen="0.0.0.0",
         port=10000,
-        webhook_url=webhook_url,
+        webhook_url=RENDER_EXTERNAL_URL,
     )
