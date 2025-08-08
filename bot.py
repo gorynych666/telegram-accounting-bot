@@ -8,7 +8,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-from gspread_formatting import set_border
+from gspread_formatting.dataframe import set_border
 
 # Логирование
 logging.basicConfig(level=logging.INFO)
