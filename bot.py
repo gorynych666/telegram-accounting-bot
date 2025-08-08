@@ -1,101 +1,98 @@
+import logging
 import os
-import datetime
-from dotenv import load_dotenv
-import gspread
-from gspread_formatting import format_cell_range, CellFormat, Border, Color, borders
-from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
-import nest_asyncio
+from datetime import datetime
 
-# Загрузка переменных окружения
+import gspread
+from dotenv import load_dotenv
+from gspread_formatting import CellFormat, Border, set_frozen
+from gspread_formatting import set_format
+from gspread_formatting import Color
+from gspread_formatting import set_cell_format
+from gspread_formatting import Border
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+
+# Load environment variables
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
-SERVICE_ACCOUNT_FILE = "service_account.json"
+SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE")
 
-# Подключение к Google Sheets
-scope = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive",
-]
-credentials = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
-gc = gspread.authorize(credentials)
-spreadsheet = gc.open_by_key(SPREADSHEET_ID)
-
-# Формат для границ ячеек
-cell_border_format = CellFormat(
-    borders=borders(
-        top=Border("SOLID", Color(0, 0, 0)),
-        bottom=Border("SOLID", Color(0, 0, 0)),
-        left=Border("SOLID", Color(0, 0, 0)),
-        right=Border("SOLID", Color(0, 0, 0)),
-    )
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 
-# Создание листа, если не существует
-def get_or_create_sheet(title):
-    try:
-        return spreadsheet.worksheet(title)
-    except gspread.exceptions.WorksheetNotFound:
-        return spreadsheet.add_worksheet(title=title, rows="1000", cols="20")
+# Connect to Google Sheets
+gc = gspread.service_account(filename=SERVICE_ACCOUNT_FILE)
+sheet = gc.open_by_key(SPREADSHEET_ID)
 
-# Парсинг и обработка сообщения
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message_text = update.message.text.strip()
-    values = message_text.split()
+# Define month mapping
+MONTHS = {
+    "01": "Январь", "02": "Февраль", "03": "Март", "04": "Апрель",
+    "05": "Май", "06": "Июнь", "07": "Июль", "08": "Август",
+    "09": "Сентябрь", "10": "Октябрь", "11": "Ноябрь", "12": "Декабрь"
+}
 
-    if not values:
-        await update.message.reply_text("Ошибка: пустое сообщение.")
-        return
+# Border formatting
+border = Border("SOLID", Color(0, 0, 0, 1))
+cell_format = CellFormat(
+    borders={'top': border, 'bottom': border, 'left': border, 'right': border}
+)
 
-    # Названия столбцов
-    headers = [
-        "Дата", "Водитель (ФИО)", "Транспорт", "Номер транспорта", "Наименование груза",
-        "Количество топлива", "Вид топлива", "Маршрут", "Расстояние (км)",
-        "Машина (час)", "Остаток топлива", "Примечание"
-    ]
 
-    # Лист по текущему месяцу
-    now = datetime.datetime.now()
-    sheet_title = now.strftime("%B").capitalize()
-    worksheet = get_or_create_sheet(sheet_title)
-
-    # Проверка и установка заголовков
-    if not worksheet.row_values(1):
-        worksheet.insert_row(headers, index=1)
-
-    # Автоматическое добавление даты, если не указано явно
-    today = now.strftime("%d.%m.%Y")
-    if len(values) == 11:
-        values.insert(0, today)
-    elif len(values) < 12:
-        await update.message.reply_text("Ошибка: недостаточно данных.")
-        return
-    elif len(values) > 12:
-        await update.message.reply_text("Ошибка: слишком много данных.")
-        return
-
-    worksheet.append_row(values)
-    row_number = len(worksheet.get_all_values())
+def add_borders(worksheet, row_number):
     cell_range = f"A{row_number}:L{row_number}"
-    format_cell_range(worksheet, cell_range, cell_border_format)
+    set_cell_format(worksheet, cell_range, cell_format)
 
-    await update.message.reply_text("Данные успешно добавлены.")
 
-# Запуск бота
-if __name__ == "__main__":
-    nest_asyncio.apply()
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    parts = text.split()
+
+    if len(parts) < 11:
+        await update.message.reply_text("Ошибка: слишком мало данных. Нужно минимум 11 полей.")
+        return
+
+    driver = parts[0]
+    vehicle = parts[1]
+    model = parts[2]
+    plate = parts[3]
+    cargo = parts[4]
+    fuel_qty = parts[5]
+    fuel_type = parts[6]
+    route = parts[7]
+    distance = parts[8]
+    machine_hours = parts[9]
+    fuel_left = parts[10]
+    note = " ".join(parts[11:]) if len(parts) > 11 else ""
+
+    # Current date
+    today = datetime.now()
+    date_str = today.strftime("%d.%m.%Y")
+    month_tab = MONTHS[today.strftime("%m")]
+
+    try:
+        worksheet = sheet.worksheet(month_tab)
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = sheet.add_worksheet(title=month_tab, rows="100", cols="12")
+
+    row = [date_str, driver, vehicle, model, plate, cargo, fuel_qty,
+           fuel_type, route, distance, machine_hours, fuel_left, note]
+
+    try:
+        worksheet.append_row(row, value_input_option="USER_ENTERED")
+        row_num = len(worksheet.get_all_values())
+        add_borders(worksheet, row_num)
+        await update.message.reply_text("✅ Данные успешно добавлены.")
+    except Exception as e:
+        logging.error(f"Ошибка при добавлении строки: {e}")
+        await update.message.reply_text("❌ Ошибка при добавлении данных в таблицу.")
+
+
+if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=10000,
-        webhook_url=RENDER_EXTERNAL_URL,
-    )
+    handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
+    app.add_handler(handler)
+    app.run_polling()
