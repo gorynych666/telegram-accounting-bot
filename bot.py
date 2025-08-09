@@ -21,7 +21,21 @@ SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/spreadsheets",
          "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
 
-creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
+import json
+from oauth2client.service_account import ServiceAccountCredentials
+
+scope = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+json_str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+if not json_str:
+    raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON is not set")
+
+# Значение переменной — это JSON-строка; распарсим её в dict
+service_info = json.loads(json_str)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(service_info, scope)
 client = gspread.authorize(creds)
 
 # Названия столбцов
